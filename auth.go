@@ -55,6 +55,12 @@ func NewAuth(accessKey, secretKey, token string) *AuthCredentials {
 	}
 }
 
+// NewEmptyAuth creates a *AuthCredentials struct that adheres to the Auth interface
+// but contains no credentials and does not Sign requests
+func NewEmptyAuth() *AuthCredentials {
+	return &AuthCredentials{}
+}
+
 // NewAuthFromEnv retrieves auth credentials from environment vars
 func NewAuthFromEnv() (*AuthCredentials, error) {
 	accessKey := os.Getenv(AccessEnvKey)

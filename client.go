@@ -34,9 +34,12 @@ func NewClientWithHTTPClient(auth Auth, httpClient *http.Client) *Client {
 
 // Do some request, but sign it before sending
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	err := Sign(c.auth, req)
-	if err != nil {
-		return nil, err
+	var err error
+	if c.auth.GetAccessKey() != "" {
+		err = Sign(c.auth, req)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if c.auth.HasExpiration() && time.Now().After(c.auth.GetExpiration()) {
