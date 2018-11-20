@@ -9,6 +9,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/defaults"
 )
 
 const (
@@ -26,10 +29,9 @@ const (
 // Auth interface for authentication credentials and information
 type Auth interface {
 	GetToken() string
-	GetExpiration() time.Time
 	GetSecretKey() string
 	GetAccessKey() string
-	HasExpiration() bool
+	IsExpired() bool
 	Renew() error
 	Sign(*Service, time.Time) []byte
 }
@@ -45,6 +47,8 @@ type AuthCredentials struct {
 	expiry time.Time
 }
 
+var _ Auth = (*AuthCredentials)(nil)
+
 // NewAuth creates a *AuthCredentials struct that adheres to the Auth interface to
 // dynamically retrieve AWS credentials
 func NewAuth(accessKey, secretKey, token string) *AuthCredentials {
@@ -53,12 +57,6 @@ func NewAuth(accessKey, secretKey, token string) *AuthCredentials {
 		secretKey: secretKey,
 		token:     token,
 	}
-}
-
-// NewEmptyAuth creates a *AuthCredentials struct that adheres to the Auth interface
-// but contains no credentials and does not Sign requests
-func NewEmptyAuth() *AuthCredentials {
-	return &AuthCredentials{}
 }
 
 // NewAuthFromEnv retrieves auth credentials from environment vars
@@ -102,16 +100,6 @@ func NewAuthFromMetadata() (*AuthCredentials, error) {
 	return auth, nil
 }
 
-// HasExpiration returns true if the expiration time is non-zero and false otherwise
-func (a *AuthCredentials) HasExpiration() bool {
-	return !a.expiry.IsZero()
-}
-
-// GetExpiration retrieves the current expiration time
-func (a *AuthCredentials) GetExpiration() time.Time {
-	return a.expiry
-}
-
 // GetToken returns the token
 func (a *AuthCredentials) GetToken() string {
 	return a.token
@@ -125,6 +113,10 @@ func (a *AuthCredentials) GetSecretKey() string {
 // GetAccessKey returns the access key
 func (a *AuthCredentials) GetAccessKey() string {
 	return a.accessKey
+}
+
+func (a *AuthCredentials) IsExpired() bool {
+	return !a.expiry.IsZero() && time.Now().After(a.expiry)
 }
 
 // Renew retrieves a new token and mutates it on an instance of the Auth struct
@@ -150,11 +142,14 @@ func (a *AuthCredentials) Renew() error {
 	return nil
 }
 
+func (a *AuthCredentials) Sign(s *Service, t time.Time) []byte {
+	return signWithSecretKey(a.GetSecretKey(), s, t)
+}
+
 // Sign API request by
 // http://docs.amazonwebservices.com/general/latest/gr/signature-version-4.html
-
-func (a *AuthCredentials) Sign(s *Service, t time.Time) []byte {
-	h := ghmac([]byte("AWS4"+a.GetSecretKey()), []byte(t.Format(iSO8601BasicFormatShort)))
+func signWithSecretKey(secretKey string, s *Service, t time.Time) []byte {
+	h := ghmac([]byte("AWS4"+secretKey), []byte(t.Format(iSO8601BasicFormatShort)))
 	h = ghmac(h, []byte(s.Region))
 	h = ghmac(h, []byte(s.Name))
 	h = ghmac(h, []byte(AWS4_URL))
@@ -205,4 +200,56 @@ func retrieveIAMRole() (string, error) {
 	}
 
 	return role, nil
+}
+
+// AuthAWS re-implements the Auth interface using the default AWS credentials chain from the official SDK
+type AuthAWS struct {
+	creds *credentials.Credentials
+}
+
+var _ Auth = (*AuthAWS)(nil)
+
+// NewAWSDefaultAuth creates an Auth using the default AWS credentials chain from the official SDK
+func NewAWSDefaultAuth() *AuthAWS {
+	return &AuthAWS{
+		creds: defaults.Get().Config.Credentials,
+	}
+}
+
+func (a *AuthAWS) GetToken() string {
+	value, err := a.creds.Get()
+	if err != nil {
+		panic(err.Error())
+	}
+	return value.SessionToken
+}
+
+func (a *AuthAWS) GetAccessKey() string {
+	value, err := a.creds.Get()
+	if err != nil {
+		panic(err.Error())
+	}
+	return value.AccessKeyID
+}
+
+func (a *AuthAWS) GetSecretKey() string {
+	value, err := a.creds.Get()
+	if err != nil {
+		panic(err.Error())
+	}
+	return value.SecretAccessKey
+}
+
+func (a *AuthAWS) IsExpired() bool {
+	return a.creds.IsExpired()
+}
+
+func (a *AuthAWS) Renew() error {
+	a.creds.Expire()
+	_, err := a.creds.Get()
+	return err
+}
+
+func (a *AuthAWS) Sign(s *Service, t time.Time) []byte {
+	return signWithSecretKey(a.GetSecretKey(), s, t)
 }

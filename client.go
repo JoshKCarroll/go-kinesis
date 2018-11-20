@@ -2,7 +2,6 @@ package kinesis
 
 import (
 	"net/http"
-	"time"
 )
 
 const AWSSecurityTokenHeader = "X-Amz-Security-Token"
@@ -34,15 +33,12 @@ func NewClientWithHTTPClient(auth Auth, httpClient *http.Client) *Client {
 
 // Do some request, but sign it before sending
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	var err error
-	if c.auth.GetAccessKey() != "" {
-		err = Sign(c.auth, req)
-		if err != nil {
-			return nil, err
-		}
+	err := Sign(c.auth, req)
+	if err != nil {
+		return nil, err
 	}
 
-	if c.auth.HasExpiration() && time.Now().After(c.auth.GetExpiration()) {
+	if c.auth.IsExpired() {
 		if err = c.auth.Renew(); err != nil { // TODO: (see auth.go#Renew) may be slow
 			return nil, err
 		}

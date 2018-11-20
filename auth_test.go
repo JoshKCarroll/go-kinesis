@@ -36,23 +36,6 @@ func TestGetToken(t *testing.T) {
 	}
 }
 
-func TestNewEmptyAuth(t *testing.T) {
-	auth := NewEmptyAuth()
-
-	if auth.GetAccessKey() != "" {
-		t.Error("expected empty auth#accessKey")
-	}
-	if auth.GetSecretKey() != "" {
-		t.Error("expected empty auth#secretKey")
-	}
-	if auth.GetToken() != "" {
-		t.Error("expected empty auth#token")
-	}
-	if auth.HasExpiration() != false {
-		t.Error("expected no expiration")
-	}
-}
-
 func TestNewAuthFromEnv(t *testing.T) {
 	os.Setenv(AccessEnvKey, "asdf")
 	os.Setenv(SecretEnvKey, "asdf2")
