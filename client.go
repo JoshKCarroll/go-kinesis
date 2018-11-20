@@ -44,8 +44,12 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	if c.auth.GetToken() != "" {
-		req.Header.Add(AWSSecurityTokenHeader, c.auth.GetToken())
+	token, err := c.auth.GetToken()
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Add(AWSSecurityTokenHeader, token)
 	}
 
 	return c.client.Do(req)

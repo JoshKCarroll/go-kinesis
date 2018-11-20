@@ -57,12 +57,20 @@ func (s *Service) Sign(authKeys Auth, r *http.Request) error {
 	}
 	r.Header.Set("Date", t.Format(iSO8601BasicFormat))
 
-	k := authKeys.Sign(s, t)
+	k, err := authKeys.Sign(s, t)
+	if err != nil {
+		return err
+	}
 	h := hmac.New(sha256.New, k)
 	s.writeStringToSign(h, t, r)
 
+	accessKey, err := authKeys.GetAccessKey()
+	if err != nil {
+		return err
+	}
+
 	auth := bytes.NewBufferString("AWS4-HMAC-SHA256 ")
-	auth.Write([]byte("Credential=" + authKeys.GetAccessKey() + "/" + s.creds(t)))
+	auth.Write([]byte("Credential=" + accessKey + "/" + s.creds(t)))
 	auth.Write([]byte{',', ' '})
 	auth.Write([]byte("SignedHeaders="))
 	s.writeHeaderList(auth, r)

@@ -28,12 +28,12 @@ const (
 
 // Auth interface for authentication credentials and information
 type Auth interface {
-	GetToken() string
-	GetSecretKey() string
-	GetAccessKey() string
+	GetToken() (string, error)
+	GetSecretKey() (string, error)
+	GetAccessKey() (string, error)
 	IsExpired() bool
 	Renew() error
-	Sign(*Service, time.Time) []byte
+	Sign(*Service, time.Time) ([]byte, error)
 }
 
 // AuthCredentials holds the AWS credentials and metadata
@@ -101,18 +101,18 @@ func NewAuthFromMetadata() (*AuthCredentials, error) {
 }
 
 // GetToken returns the token
-func (a *AuthCredentials) GetToken() string {
-	return a.token
+func (a *AuthCredentials) GetToken() (string, error) {
+	return a.token, nil
 }
 
 // GetSecretKey returns the secret key
-func (a *AuthCredentials) GetSecretKey() string {
-	return a.secretKey
+func (a *AuthCredentials) GetSecretKey() (string, error) {
+	return a.secretKey, nil
 }
 
 // GetAccessKey returns the access key
-func (a *AuthCredentials) GetAccessKey() string {
-	return a.accessKey
+func (a *AuthCredentials) GetAccessKey() (string, error) {
+	return a.accessKey, nil
 }
 
 func (a *AuthCredentials) IsExpired() bool {
@@ -142,8 +142,8 @@ func (a *AuthCredentials) Renew() error {
 	return nil
 }
 
-func (a *AuthCredentials) Sign(s *Service, t time.Time) []byte {
-	return signWithSecretKey(a.GetSecretKey(), s, t)
+func (a *AuthCredentials) Sign(s *Service, t time.Time) ([]byte, error) {
+	return signWithSecretKey(a.secretKey, s, t), nil
 }
 
 // Sign API request by
@@ -216,28 +216,28 @@ func NewAWSDefaultAuth() *AuthAWS {
 	}
 }
 
-func (a *AuthAWS) GetToken() string {
+func (a *AuthAWS) GetToken() (string, error) {
 	value, err := a.creds.Get()
 	if err != nil {
-		panic(err.Error())
+		return "", err
 	}
-	return value.SessionToken
+	return value.SessionToken, nil
 }
 
-func (a *AuthAWS) GetAccessKey() string {
+func (a *AuthAWS) GetAccessKey() (string, error) {
 	value, err := a.creds.Get()
 	if err != nil {
-		panic(err.Error())
+		return "", err
 	}
-	return value.AccessKeyID
+	return value.AccessKeyID, nil
 }
 
-func (a *AuthAWS) GetSecretKey() string {
+func (a *AuthAWS) GetSecretKey() (string, error) {
 	value, err := a.creds.Get()
 	if err != nil {
-		panic(err.Error())
+		return "", err
 	}
-	return value.SecretAccessKey
+	return value.SecretAccessKey, nil
 }
 
 func (a *AuthAWS) IsExpired() bool {
@@ -250,6 +250,10 @@ func (a *AuthAWS) Renew() error {
 	return err
 }
 
-func (a *AuthAWS) Sign(s *Service, t time.Time) []byte {
-	return signWithSecretKey(a.GetSecretKey(), s, t)
+func (a *AuthAWS) Sign(s *Service, t time.Time) ([]byte, error) {
+	secretKey, err := a.GetSecretKey()
+	if err != nil {
+		return nil, err
+	}
+	return signWithSecretKey(secretKey, s, t), nil
 }
