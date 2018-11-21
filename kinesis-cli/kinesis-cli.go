@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	// "github.com/sendgridlabs/go-kinesis"
-	"github.com/sendgridlabs/go-kinesis"
+	"github.com/JoshKCarroll/go-kinesis"
 )
 
 const HELP = `Usage: ./kinesis-cli <command> [<arg>, ...]

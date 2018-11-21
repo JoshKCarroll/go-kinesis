@@ -9,6 +9,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/defaults"
 )
 
 const (
@@ -25,13 +28,12 @@ const (
 
 // Auth interface for authentication credentials and information
 type Auth interface {
-	GetToken() string
-	GetExpiration() time.Time
-	GetSecretKey() string
-	GetAccessKey() string
-	HasExpiration() bool
+	GetToken() (string, error)
+	GetSecretKey() (string, error)
+	GetAccessKey() (string, error)
+	IsExpired() bool
 	Renew() error
-	Sign(*Service, time.Time) []byte
+	Sign(*Service, time.Time) ([]byte, error)
 }
 
 // AuthCredentials holds the AWS credentials and metadata
@@ -44,6 +46,8 @@ type AuthCredentials struct {
 	// temporary (and probably fetched from an IAM role from the metadata server)
 	expiry time.Time
 }
+
+var _ Auth = (*AuthCredentials)(nil)
 
 // NewAuth creates a *AuthCredentials struct that adheres to the Auth interface to
 // dynamically retrieve AWS credentials
@@ -96,29 +100,23 @@ func NewAuthFromMetadata() (*AuthCredentials, error) {
 	return auth, nil
 }
 
-// HasExpiration returns true if the expiration time is non-zero and false otherwise
-func (a *AuthCredentials) HasExpiration() bool {
-	return !a.expiry.IsZero()
-}
-
-// GetExpiration retrieves the current expiration time
-func (a *AuthCredentials) GetExpiration() time.Time {
-	return a.expiry
-}
-
 // GetToken returns the token
-func (a *AuthCredentials) GetToken() string {
-	return a.token
+func (a *AuthCredentials) GetToken() (string, error) {
+	return a.token, nil
 }
 
 // GetSecretKey returns the secret key
-func (a *AuthCredentials) GetSecretKey() string {
-	return a.secretKey
+func (a *AuthCredentials) GetSecretKey() (string, error) {
+	return a.secretKey, nil
 }
 
 // GetAccessKey returns the access key
-func (a *AuthCredentials) GetAccessKey() string {
-	return a.accessKey
+func (a *AuthCredentials) GetAccessKey() (string, error) {
+	return a.accessKey, nil
+}
+
+func (a *AuthCredentials) IsExpired() bool {
+	return !a.expiry.IsZero() && time.Now().After(a.expiry)
 }
 
 // Renew retrieves a new token and mutates it on an instance of the Auth struct
@@ -144,11 +142,14 @@ func (a *AuthCredentials) Renew() error {
 	return nil
 }
 
+func (a *AuthCredentials) Sign(s *Service, t time.Time) ([]byte, error) {
+	return signWithSecretKey(a.secretKey, s, t), nil
+}
+
 // Sign API request by
 // http://docs.amazonwebservices.com/general/latest/gr/signature-version-4.html
-
-func (a *AuthCredentials) Sign(s *Service, t time.Time) []byte {
-	h := ghmac([]byte("AWS4"+a.GetSecretKey()), []byte(t.Format(iSO8601BasicFormatShort)))
+func signWithSecretKey(secretKey string, s *Service, t time.Time) []byte {
+	h := ghmac([]byte("AWS4"+secretKey), []byte(t.Format(iSO8601BasicFormatShort)))
 	h = ghmac(h, []byte(s.Region))
 	h = ghmac(h, []byte(s.Name))
 	h = ghmac(h, []byte(AWS4_URL))
@@ -199,4 +200,60 @@ func retrieveIAMRole() (string, error) {
 	}
 
 	return role, nil
+}
+
+// AuthAWS re-implements the Auth interface using the default AWS credentials chain from the official SDK
+type AuthAWS struct {
+	creds *credentials.Credentials
+}
+
+var _ Auth = (*AuthAWS)(nil)
+
+// NewAWSDefaultAuth creates an Auth using the default AWS credentials chain from the official SDK
+func NewAWSDefaultAuth() *AuthAWS {
+	return &AuthAWS{
+		creds: defaults.Get().Config.Credentials,
+	}
+}
+
+func (a *AuthAWS) GetToken() (string, error) {
+	value, err := a.creds.Get()
+	if err != nil {
+		return "", err
+	}
+	return value.SessionToken, nil
+}
+
+func (a *AuthAWS) GetAccessKey() (string, error) {
+	value, err := a.creds.Get()
+	if err != nil {
+		return "", err
+	}
+	return value.AccessKeyID, nil
+}
+
+func (a *AuthAWS) GetSecretKey() (string, error) {
+	value, err := a.creds.Get()
+	if err != nil {
+		return "", err
+	}
+	return value.SecretAccessKey, nil
+}
+
+func (a *AuthAWS) IsExpired() bool {
+	return a.creds.IsExpired()
+}
+
+func (a *AuthAWS) Renew() error {
+	a.creds.Expire()
+	_, err := a.creds.Get()
+	return err
+}
+
+func (a *AuthAWS) Sign(s *Service, t time.Time) ([]byte, error) {
+	secretKey, err := a.GetSecretKey()
+	if err != nil {
+		return nil, err
+	}
+	return signWithSecretKey(secretKey, s, t), nil
 }

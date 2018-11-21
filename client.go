@@ -2,7 +2,6 @@ package kinesis
 
 import (
 	"net/http"
-	"time"
 )
 
 const AWSSecurityTokenHeader = "X-Amz-Security-Token"
@@ -39,14 +38,18 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
-	if c.auth.HasExpiration() && time.Now().After(c.auth.GetExpiration()) {
+	if c.auth.IsExpired() {
 		if err = c.auth.Renew(); err != nil { // TODO: (see auth.go#Renew) may be slow
 			return nil, err
 		}
 	}
 
-	if c.auth.GetToken() != "" {
-		req.Header.Add(AWSSecurityTokenHeader, c.auth.GetToken())
+	token, err := c.auth.GetToken()
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Add(AWSSecurityTokenHeader, token)
 	}
 
 	return c.client.Do(req)

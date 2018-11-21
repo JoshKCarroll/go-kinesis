@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+func swallowErr(s string, e error) string {
+	return s
+}
+
 func TestAuthInterfaceIsImplemented(t *testing.T) {
 	var auth Auth = &AuthCredentials{}
 	if auth == nil {
@@ -15,7 +19,7 @@ func TestAuthInterfaceIsImplemented(t *testing.T) {
 func TestGetSecretKey(t *testing.T) {
 	auth := NewAuth("BAD_ACCESS_KEY", "BAD_SECRET_KEY", "BAD_SECURITY_TOKEN")
 
-	if auth.GetAccessKey() != "BAD_ACCESS_KEY" {
+	if swallowErr(auth.GetAccessKey()) != "BAD_ACCESS_KEY" {
 		t.Error("incorrect value for auth#accessKey")
 	}
 }
@@ -23,7 +27,7 @@ func TestGetSecretKey(t *testing.T) {
 func TestGetAccessKey(t *testing.T) {
 	auth := NewAuth("BAD_ACCESS_KEY", "BAD_SECRET_KEY", "BAD_SECURITY_TOKEN")
 
-	if auth.GetSecretKey() != "BAD_SECRET_KEY" {
+	if swallowErr(auth.GetSecretKey()) != "BAD_SECRET_KEY" {
 		t.Error("incorrect value for auth#secretKey")
 	}
 }
@@ -31,7 +35,7 @@ func TestGetAccessKey(t *testing.T) {
 func TestGetToken(t *testing.T) {
 	auth := NewAuth("BAD_ACCESS_KEY", "BAD_SECRET_KEY", "BAD_SECURITY_TOKEN")
 
-	if auth.GetToken() != "BAD_SECURITY_TOKEN" {
+	if swallowErr(auth.GetToken()) != "BAD_SECURITY_TOKEN" {
 		t.Error("incorrect value for auth#token")
 	}
 }
@@ -47,15 +51,15 @@ func TestNewAuthFromEnv(t *testing.T) {
 
 	auth, _ := NewAuthFromEnv()
 
-	if auth.GetAccessKey() != "asdf" {
+	if swallowErr(auth.GetAccessKey()) != "asdf" {
 		t.Error("Expected AccessKey to be inferred as \"asdf\"")
 	}
 
-	if auth.GetSecretKey() != "asdf2" {
+	if swallowErr(auth.GetSecretKey()) != "asdf2" {
 		t.Error("Expected SecretKey to be inferred as \"asdf2\"")
 	}
 
-	if auth.GetToken() != "dummy_token" {
+	if swallowErr(auth.GetToken()) != "dummy_token" {
 		t.Error("Expected SecurityToken to be inferred as \"dummy_token\"")
 	}
 }
@@ -70,15 +74,15 @@ func TestNewAuthFromEnvWithoutSecurityToken(t *testing.T) {
 
 	auth, _ := NewAuthFromEnv()
 
-	if auth.GetAccessKey() != "asdf" {
+	if swallowErr(auth.GetAccessKey()) != "asdf" {
 		t.Error("Expected AccessKey to be inferred as \"asdf\"")
 	}
 
-	if auth.GetSecretKey() != "asdf2" {
+	if swallowErr(auth.GetSecretKey()) != "asdf2" {
 		t.Error("Expected SecretKey to be inferred as \"asdf2\"")
 	}
 
-	if auth.GetToken() != "" {
+	if swallowErr(auth.GetToken()) != "" {
 		t.Error("Expected SecurityToken to be an empty string")
 	}
 }
@@ -108,11 +112,11 @@ func TestNewAuthFromEnvWithFallbackVars(t *testing.T) {
 
 	auth, _ := NewAuthFromEnv()
 
-	if auth.GetAccessKey() != "asdf" {
+	if swallowErr(auth.GetAccessKey()) != "asdf" {
 		t.Error("Expected AccessKey to be inferred as \"asdf\"")
 	}
 
-	if auth.GetSecretKey() != "asdf2" {
+	if swallowErr(auth.GetSecretKey()) != "asdf2" {
 		t.Error("Expected SecretKey to be inferred as \"asdf2\"")
 	}
 }
