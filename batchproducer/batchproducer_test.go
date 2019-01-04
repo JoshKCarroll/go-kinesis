@@ -3,20 +3,19 @@ package batchproducer
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
-	"log"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/JoshKCarroll/go-kinesis"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 var (
-	discardLogger = log.New(ioutil.Discard, "", 0)
-	stdoutLogger  = log.New(os.Stdout, "", 0)
+	discardLogger = zap.NewNop()
 )
 
 func TestNewBatchProducerWithGoodValues(t *testing.T) {
@@ -408,7 +407,6 @@ func TestSuccessfulRecordsStat(t *testing.T) {
 	b := newProducer(&mockBatchingClient{}, 100, 0, 20)
 	b.config.StatReceiver = sr
 	b.config.StatInterval = 1 * time.Millisecond
-	// b.logger = stdoutLogger // TEMP TEMP TEMP
 	b.Start()
 	defer b.Stop()
 
@@ -557,7 +555,7 @@ func TestLogMessageWhenKinesisSucceeds(t *testing.T) {
 	t.Parallel()
 
 	b := newProducer(&mockBatchingClient{shouldErr: false}, 100, 0, 20)
-	loggerBuffer, logger := newBufferedLogger()
+	logRecorder, logger := newRecordedLogger()
 	b.logger = logger
 	b.Start()
 	defer b.Stop()
@@ -565,29 +563,27 @@ func TestLogMessageWhenKinesisSucceeds(t *testing.T) {
 	// Adding 20 **will** trigger a batch
 	b.addRecordsAndWait(20, 2)
 
-	loggerString := loggerBuffer.String()
+	loggerString := logRecorder.All()[0].Message
 	requiredString := "PutRecords request succeeded: sent 20 records to Kinesis stream"
 	if !strings.Contains(loggerString, requiredString) {
 		t.Errorf("%s does not contain %s", loggerString, requiredString)
 	}
 }
 
-func TestLogMessageWhenKinesisReturnsError(t *testing.T) {
+func TestReturnEventWhenKinesisReturnsError(t *testing.T) {
 	t.Parallel()
 
 	b := newProducer(&mockBatchingClient{shouldErr: true}, 100, 0, 20)
-	loggerBuffer, logger := newBufferedLogger()
-	b.logger = logger
 	b.Start()
 	defer b.Stop()
 
 	// Adding 20 **will** trigger a batch
 	b.addRecordsAndWait(20, 2)
 
-	loggerString := loggerBuffer.String()
-	requiredString := "Error occurred when sending PutRecords request"
-	if !strings.Contains(loggerString, requiredString) {
-		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	err := (<-b.Events()).(*Error)
+	requiredString := "Oh Noes!"
+	if err.Error() != requiredString {
+		t.Errorf("%s does not contain %s", err.Error(), requiredString)
 	}
 }
 
@@ -599,7 +595,7 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 	b.config.StatReceiver = sr
 	b.config.StatInterval = 1 * time.Millisecond
 	b.config.MaxAttemptsPerRecord = 2
-	loggerBuffer, logger := newBufferedLogger()
+	logRecorder, logger := newRecordedLogger()
 	b.logger = logger
 	b.Start()
 	defer b.Stop()
@@ -615,7 +611,11 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 	// and then dropped
 	time.Sleep(5 * time.Millisecond)
 
-	loggerString := loggerBuffer.String()
+	buf := new(bytes.Buffer)
+	for _, log := range logRecorder.All() {
+		buf.WriteString(log.Message)
+	}
+	loggerString := buf.String()
 
 	requiredString := "Partial success when sending a PutRecords request"
 	if !strings.Contains(loggerString, requiredString) {
@@ -883,8 +883,8 @@ func (s *statReceiver) Receive(sf StatsBatch) {
 	s.totalRecordsDroppedSinceLastStat += sf.RecordsDroppedSinceLastStat
 }
 
-func newBufferedLogger() (*bytes.Buffer, *log.Logger) {
-	buf := new(bytes.Buffer)
-	logger := log.New(buf, "", 0)
-	return buf, logger
+func newRecordedLogger() (*observer.ObservedLogs, *zap.Logger) {
+	core, recorded := observer.New(zapcore.DebugLevel)
+	zl := zap.New(core)
+	return recorded, zl
 }
