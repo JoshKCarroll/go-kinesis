@@ -2,12 +2,12 @@ package batchproducer
 
 import (
 	"errors"
-	"log"
-	"os"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/JoshKCarroll/go-kinesis"
+	"go.uber.org/zap"
 )
 
 // MaxKinesisBatchSize is the maximum number of records that Kinesis accepts in a request
@@ -39,6 +39,9 @@ type Producer interface {
 	// If Flush finishes sending all records without timing out, and sendStats is true, it will
 	// cause a single final StatsBatch to be sent to the StatsReceiver in Config, if set.
 	Flush(timeout time.Duration, sendStats bool) (sent int, remaining int, err error)
+
+	// Events returns a channel for receiving Events such as errors from the Producer
+	Events() <-chan Event
 }
 
 // StatReceiver defines an object that can accept stats.
@@ -66,10 +69,6 @@ type BatchingKinesisClient interface {
 	PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error)
 }
 
-type BatchProducerLogger interface {
-	Printf(format string, args ...interface{})
-}
-
 // Config is a collection of config values for a Producer
 type Config struct {
 	// AddBlocksWhenBufferFull controls the behavior of Add when the buffer is full. If true, Add
@@ -95,7 +94,7 @@ type Config struct {
 	FlushInterval time.Duration
 
 	// The logger used by the Producer.
-	Logger BatchProducerLogger
+	Logger *zap.Logger
 
 	// MaxAttemptsPerRecord defines how many attempts should be made for each record before it is
 	// dropped. You probably want this higher than the init default of 0.
@@ -120,7 +119,7 @@ var DefaultConfig = Config{
 	BatchSize:               10,
 	MaxAttemptsPerRecord:    10,
 	StatInterval:            1 * time.Second,
-	Logger:                  log.New(os.Stderr, "", log.LstdFlags),
+	Logger:                  zap.NewNop(),
 }
 
 var (
@@ -159,6 +158,7 @@ func New(
 		logger:      config.Logger,
 		currentStat: new(StatsBatch),
 		records:     make(chan batchRecord, config.BufferSize),
+		events:      make(chan Event, config.BufferSize),
 		start:       make(chan interface{}),
 		stop:        make(chan interface{}),
 	}
@@ -170,13 +170,14 @@ type batchProducer struct {
 	client            BatchingKinesisClient
 	streamName        string
 	config            Config
-	logger            BatchProducerLogger
+	logger            *zap.Logger
 	running           bool
 	runningMu         sync.RWMutex
 	consecutiveErrors int
 	currentDelay      time.Duration
 	currentStat       *StatsBatch
 	records           chan batchRecord
+	events            chan Event
 
 	// start and stop will be unbuffered and will be used to send signals to start/stop and
 	// response signals that indicate that the respective operations have completed.
@@ -279,6 +280,10 @@ func (b *batchProducer) Stop() error {
 	return nil
 }
 
+func (b *batchProducer) Events() <-chan Event {
+	return (<-chan Event)(b.events)
+}
+
 // from/for interface Producer
 // TODO: send all batches in parallel, will require broader refactoring
 func (b *batchProducer) Flush(timeout time.Duration, sendStats bool) (int, int, error) {
@@ -331,7 +336,7 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 	}
 
 	if b.currentDelay > 0 {
-		b.logger.Printf("Delaying the batch by %v because of %v consecutive errors", b.currentDelay, b.consecutiveErrors)
+		b.logger.Debug(fmt.Sprintf("Delaying the batch by %v because of %v consecutive errors", b.currentDelay, b.consecutiveErrors))
 		time.Sleep(b.currentDelay)
 	}
 
@@ -341,13 +346,13 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 	if err != nil {
 		b.consecutiveErrors++
 		b.currentStat.KinesisErrorsSinceLastStat++
-		b.logger.Printf("Error occurred when sending PutRecords request to Kinesis stream %v: %v", b.streamName, err)
+		b.events <- newError(err.Error())
 
 		if b.consecutiveErrors >= 5 && b.isBufferFullOrNearlyFull() {
 			// In order to prevent Add from hanging indefinitely, we start dropping records
-			b.logger.Printf("DROPPING %v records because buffer is full or nearly full and there have been %v consecutive errors from Kinesis", len(records), b.consecutiveErrors)
+			b.logger.Error(fmt.Sprintf("DROPPING %v records because buffer is full or nearly full and there have been %v consecutive errors from Kinesis", len(records), b.consecutiveErrors))
 		} else {
-			b.logger.Printf("Returning %v records to buffer (%v consecutive errors)", len(records), b.consecutiveErrors)
+			b.logger.Debug(fmt.Sprintf("Returning %v records to buffer (%v consecutive errors)", len(records), b.consecutiveErrors))
 			// returnRecordsToBuffer can block if the buffer (channel) if full so we’ll
 			// call it in a goroutine. This might be problematic WRT ordering. TODO: revisit this.
 			go b.returnRecordsToBuffer(records)
@@ -363,9 +368,9 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 	b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
 
 	if res.FailedRecordCount == 0 {
-		b.logger.Printf("PutRecords request succeeded: sent %v records to Kinesis stream %v", succeeded, b.streamName)
+		b.logger.Debug(fmt.Sprintf("PutRecords request succeeded: sent %v records to Kinesis stream %v", succeeded, b.streamName))
 	} else {
-		b.logger.Printf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount)
+		b.logger.Debug(fmt.Sprintf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount))
 		// returnSomeFailedRecordsToBuffer can block if the buffer (channel) if full so we’ll
 		// call it in a goroutine. This might be problematic WRT ordering. TODO: revisit this.
 		go b.returnSomeFailedRecordsToBuffer(res, records)
@@ -430,14 +435,14 @@ func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsR
 			record.sendAttempts++
 
 			if record.sendAttempts < b.config.MaxAttemptsPerRecord {
-				b.logger.Printf("Re-enqueueing failed record to buffer for retry. Error code was: '%v' and message was '%v'", result.ErrorCode, result.ErrorMessage)
+				b.logger.Warn(fmt.Sprintf("Re-enqueueing failed record to buffer for retry. Error code was: '%v' and message was '%v'", result.ErrorCode, result.ErrorMessage))
 				// Not using b.Add because we want to preserve the value of record.sendAttempts.
 				b.records <- record
 			} else {
 				b.currentStat.RecordsDroppedSinceLastStat++
 				msg := "Dropping failed record; it has hit %v attempts " +
 					"which is the maximum. Error code was: '%v' and message was '%v'."
-				b.logger.Printf(msg, record.sendAttempts, result.ErrorCode, result.ErrorMessage)
+				b.logger.Error(fmt.Sprintf(msg, record.sendAttempts, result.ErrorCode, result.ErrorMessage))
 			}
 		}
 	}
