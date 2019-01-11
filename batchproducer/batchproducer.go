@@ -6,7 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/JoshKCarroll/go-kinesis"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/kinesis"
 	"go.uber.org/zap"
 )
 
@@ -66,7 +67,7 @@ type StatsBatch struct {
 
 // BatchingKinesisClient is a subset of KinesisClient to ease mocking.
 type BatchingKinesisClient interface {
-	PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error)
+	PutRecords(*kinesis.PutRecordsInput) (*kinesis.PutRecordsOutput, error)
 }
 
 // Config is a collection of config values for a Producer
@@ -341,7 +342,7 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 	}
 
 	records := b.takeRecordsFromBuffer(batchSize)
-	res, err := b.client.PutRecords(b.recordsToArgs(records))
+	res, err := b.client.PutRecords(b.recordsToInput(records))
 
 	if err != nil {
 		b.consecutiveErrors++
@@ -363,19 +364,21 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 
 	b.consecutiveErrors = 0
 	b.currentDelay = 0
-	succeeded := len(records) - res.FailedRecordCount
-
-	b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
-
-	if res.FailedRecordCount == 0 {
+	var succeeded int
+	if res.FailedRecordCount == nil {
+		succeeded = len(records)
 		b.logger.Debug(fmt.Sprintf("PutRecords request succeeded: sent %v records to Kinesis stream %v", succeeded, b.streamName))
 	} else {
+		// note *int64 to int conversion - in practice we never expect 2 billion failed records
+		// in a single call since API only supports 500 records per call
+		succeeded = len(records) - int(*res.FailedRecordCount)
 		b.logger.Debug(fmt.Sprintf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount))
 		// returnSomeFailedRecordsToBuffer can block if the buffer (channel) if full so we’ll
 		// call it in a goroutine. This might be problematic WRT ordering. TODO: revisit this.
 		go b.returnSomeFailedRecordsToBuffer(res, records)
 	}
 
+	b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
 	return succeeded
 }
 
@@ -404,13 +407,15 @@ func (b *batchProducer) takeRecordsFromBuffer(batchSize int) []batchRecord {
 	return result
 }
 
-func (b *batchProducer) recordsToArgs(records []batchRecord) *kinesis.RequestArgs {
-	args := kinesis.NewArgs()
-	args.Add("StreamName", b.streamName)
-	for _, record := range records {
-		args.AddRecord(record.data, record.partitionKey)
+func (b *batchProducer) recordsToInput(records []batchRecord) *kinesis.PutRecordsInput {
+	awsRecords := make([]*kinesis.PutRecordsRequestEntry, len(records))
+	for i, rec := range records {
+		awsRecords[i] = &kinesis.PutRecordsRequestEntry{PartitionKey: aws.String(rec.partitionKey), Data: rec.data}
 	}
-	return args
+	return &kinesis.PutRecordsInput{
+		StreamName: aws.String(b.streamName),
+		Records:    awsRecords,
+	}
 }
 
 // returnRecordsToBuffer can block if the buffer (channel) is full, so you might want to
@@ -428,21 +433,21 @@ func (b *batchProducer) returnRecordsToBuffer(records []batchRecord) {
 // call it in a goroutine.
 // TODO: we should probably use a deque internally as the buffer so we can return records to
 // the front of the queue, so as to preserve order, which is important.
-func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsResp, records []batchRecord) {
+func (b *batchProducer) returnSomeFailedRecordsToBuffer(res *kinesis.PutRecordsOutput, records []batchRecord) {
 	for i, result := range res.Records {
 		record := records[i]
-		if result.ErrorCode != "" {
+		if result.ErrorMessage != nil {
 			record.sendAttempts++
+			b.events <- newError(*result.ErrorMessage)
 
 			if record.sendAttempts < b.config.MaxAttemptsPerRecord {
-				b.logger.Warn(fmt.Sprintf("Re-enqueueing failed record to buffer for retry. Error code was: '%v' and message was '%v'", result.ErrorCode, result.ErrorMessage))
 				// Not using b.Add because we want to preserve the value of record.sendAttempts.
 				b.records <- record
 			} else {
 				b.currentStat.RecordsDroppedSinceLastStat++
 				msg := "Dropping failed record; it has hit %v attempts " +
 					"which is the maximum. Error code was: '%v' and message was '%v'."
-				b.logger.Error(fmt.Sprintf(msg, record.sendAttempts, result.ErrorCode, result.ErrorMessage))
+				b.logger.Error(fmt.Sprintf(msg, record.sendAttempts, *result.ErrorCode, *result.ErrorMessage))
 			}
 		}
 	}

@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JoshKCarroll/go-kinesis"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/kinesis"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -622,9 +623,13 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 		t.Errorf("%s does not contain %s", loggerString, requiredString)
 	}
 
-	requiredString = "Re-enqueueing failed record to buffer for retry. Error code was: 'foo'"
-	if !strings.Contains(loggerString, requiredString) {
-		t.Errorf("%s does not contain %s", loggerString, requiredString)
+	requiredString = "this record failed"
+	if len(b.Events()) == 0 {
+		t.Errorf("Expected at least one error, 0 seen")
+	}
+	e := <-b.Events()
+	if e.String() != requiredString {
+		t.Errorf("Expected event: %s; received: %s", requiredString, e.String())
 	}
 
 	requiredString = "Dropping failed record; it has hit 2 attempts which is the maximum"
@@ -798,7 +803,7 @@ type mockBatchingClient struct {
 	sleepFor  time.Duration
 }
 
-func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesis.PutRecordsResp, err error) {
+func (s *mockBatchingClient) PutRecords(args *kinesis.PutRecordsInput) (resp *kinesis.PutRecordsOutput, err error) {
 	s.callsMu.Lock()
 	defer s.callsMu.Unlock()
 	s.calls++
@@ -808,18 +813,19 @@ func (s *mockBatchingClient) PutRecords(args *kinesis.RequestArgs) (resp *kinesi
 	}
 
 	time.Sleep(s.sleepFor)
-
-	res := kinesis.PutRecordsResp{Records: make([]kinesis.PutRecordsRespRecord, len(args.Records))}
-
+	res := kinesis.PutRecordsOutput{Records: make([]*kinesis.PutRecordsResultEntry, len(args.Records))}
+	var failedRecordCount int64
 	for i, record := range args.Records {
-		if record.PartitionKey == "fail" {
-			res.FailedRecordCount++
-			res.Records[i] = kinesis.PutRecordsRespRecord{ErrorCode: "foo", ErrorMessage: "bar"}
+		if *record.PartitionKey == "fail" {
+			failedRecordCount++
+			res.Records[i] = &kinesis.PutRecordsResultEntry{ErrorCode: aws.String("foo"), ErrorMessage: aws.String("this record failed")}
 		} else {
-			res.Records[i] = kinesis.PutRecordsRespRecord{SequenceNumber: "001", ShardId: "001"}
+			res.Records[i] = &kinesis.PutRecordsResultEntry{SequenceNumber: aws.String("001"), ShardId: aws.String("001")}
 		}
 	}
-
+	if failedRecordCount > 0 {
+		res.FailedRecordCount = &failedRecordCount
+	}
 	return &res, nil
 }
 
