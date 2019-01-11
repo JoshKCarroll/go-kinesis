@@ -625,7 +625,7 @@ func TestLogMessageWhenSomeRecordsFail(t *testing.T) {
 
 	requiredString = "this record failed"
 	if len(b.Events()) == 0 {
-		t.Errorf("Expected at least one error, %v seen", len(b.Events()))
+		t.Errorf("Expected at least one error, 0 seen")
 	}
 	e := <-b.Events()
 	if e.String() != requiredString {

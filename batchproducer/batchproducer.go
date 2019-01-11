@@ -364,26 +364,21 @@ func (b *batchProducer) sendBatch(batchSize int) int {
 
 	b.consecutiveErrors = 0
 	b.currentDelay = 0
-	// note *int64 to int conversion - in practice we never expect 2 billion failed records
-	// in a single call since API only supports 500 records per call
 	var succeeded int
-	if res.FailedRecordCount != nil {
-		succeeded = len(records) - int(*res.FailedRecordCount)
-	} else {
-		succeeded = len(records)
-	}
-
-	b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
-
 	if res.FailedRecordCount == nil {
+		succeeded = len(records)
 		b.logger.Debug(fmt.Sprintf("PutRecords request succeeded: sent %v records to Kinesis stream %v", succeeded, b.streamName))
 	} else {
+		// note *int64 to int conversion - in practice we never expect 2 billion failed records
+		// in a single call since API only supports 500 records per call
+		succeeded = len(records) - int(*res.FailedRecordCount)
 		b.logger.Debug(fmt.Sprintf("Partial success when sending a PutRecords request to Kinesis stream %v: %v succeeded, %v failed. Re-enqueueing failed records.", b.streamName, succeeded, res.FailedRecordCount))
 		// returnSomeFailedRecordsToBuffer can block if the buffer (channel) if full so we’ll
 		// call it in a goroutine. This might be problematic WRT ordering. TODO: revisit this.
 		go b.returnSomeFailedRecordsToBuffer(res, records)
 	}
 
+	b.currentStat.RecordsSentSuccessfullySinceLastStat += succeeded
 	return succeeded
 }
 
